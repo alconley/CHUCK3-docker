@@ -1,6 +1,6 @@
 # CHUCK3-docker
 
-This project wraps the `chuck3` nuclear reaction code in a Docker container so it can run easily on macOS, Windows, or Linux — even when the binary is built for Ubuntu x86_64.
+This project wraps the [CHUCK-3](https://inis.iaea.org/records/29j6s-xfg63), a nuclear reaction code for nuclear scattering amplitude and collision cross-sections by couple channel, in a Docker container so it can run easily on macOS, Windows, or Linux — even when the binary is built for Ubuntu x86_64.
 
 ---
 
