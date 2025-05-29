@@ -1,2 +1,6 @@
 *.in
 *.out
+*.log
+*.png
+.DS_Store
+*.pyc
