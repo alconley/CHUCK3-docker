@@ -48,8 +48,8 @@ This builds a container with Ubuntu 18.04 and required libraries for `chuck3`.
 Use the provided script:
 
 ```bash
-./run_chuck3.sh input.in                  # Runs chuck3 and prints output to terminal
-./run_chuck3.sh input.in output.out       # Runs chuck3 and saves output to file
+./run_chuck3.sh path/to/input.in                 # Runs chuck3 and prints output to terminal
+./run_chuck3.sh path/to/input.in path/to/out.out # Runs chuck3 and saves output to file
 ```
 
 ---
@@ -59,7 +59,7 @@ Use the provided script:
 ```bash
 #!/bin/bash
 
-# Usage: ./run_chuck3.sh input.in [output.out]
+# Usage: run_chuck3.sh input.in [output.out]
 
 INPUT_FILE="$1"
 OUTPUT_FILE="$2"
@@ -69,22 +69,34 @@ if [[ -z "$INPUT_FILE" ]]; then
   exit 1
 fi
 
-if [[ -z "$OUTPUT_FILE" ]]; then
-  # No output file — pipe result to terminal
+# Resolve input file info
+INPUT_FILE="$(realpath "$INPUT_FILE")"
+INPUT_DIR="$(dirname "$INPUT_FILE")"
+INPUT_BASENAME="$(basename "$INPUT_FILE")"
+
+if [[ -n "$OUTPUT_FILE" ]]; then
+  # Get absolute path only for the directory (realpath fails if file doesn't exist)
+  OUTPUT_DIR="$(dirname "$OUTPUT_FILE")"
+  mkdir -p "$OUTPUT_DIR"  # Create if needed
+  OUTPUT_DIR="$(realpath "$OUTPUT_DIR")"
+  OUTPUT_BASENAME="$(basename "$OUTPUT_FILE")"
+
+  # Run docker with both mounts
   docker run --rm \
     --platform linux/amd64 \
-    -v "$PWD":/app \
-    -w /app \
-    chuck3-runner \
-    bash -c "./chuck3 < $INPUT_FILE"
+    -v "$INPUT_DIR":/input \
+    -v "$OUTPUT_DIR":/output \
+    -w /input \
+    chuck3-runner:latest \
+    bash -c "chuck3 < $INPUT_BASENAME > /output/$OUTPUT_BASENAME"
 else
-  # Output file specified — write to it and also show it
+  # Only input
   docker run --rm \
     --platform linux/amd64 \
-    -v "$PWD":/app \
-    -w /app \
-    chuck3-runner \
-    bash -c "./chuck3 < $INPUT_FILE > $OUTPUT_FILE && cat $OUTPUT_FILE"
+    -v "$INPUT_DIR":/input \
+    -w /input \
+    chuck3-runner:latest \
+    bash -c "chuck3 < $INPUT_BASENAME"
 fi
 ```
 
@@ -96,6 +108,7 @@ fi
 # Use Ubuntu 18.04 because it includes libgfortran.so.3
 FROM ubuntu:18.04
 
+# Set working directory inside the container
 WORKDIR /app
 
 # Install required packages including gfortran runtime
@@ -105,10 +118,13 @@ RUN apt-get update && apt-get install -y \
     libgfortran3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy all files from host into /app
 COPY . .
 
-RUN chmod +x chuck3
+# Make sure chuck3 is executable and move it to PATH
+RUN chmod +x chuck3 && mv chuck3 /usr/local/bin/
 
+# Default command (does nothing on its own, overridden by script)
 CMD ["/bin/bash"]
 ```
 

@@ -15,7 +15,9 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 
 # Make sure chuck3 is executable
-RUN chmod +x chuck3
+# RUN chmod +x chuck3
+# Make sure chuck3 is executable and move it to PATH
+RUN chmod +x chuck3 && mv chuck3 /usr/local/bin/
 
 # Default command (does nothing on its own, overridden by script)
 CMD ["/bin/bash"]
