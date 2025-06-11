@@ -1884,8 +1884,16 @@ def bayesian_optimization_input(
     final_path_out = f"{output_dir}/{name}_bayesian_best.out"
     with open(final_path, "w") as f:
         f.write(best_input_str)
-
+        
     run_chuck3_input(chuck3_executable, final_path, output_file=final_path_out)
+
+    # clean up temp files
+    import os
+    if os.path.exists("tmp.in"):
+        os.remove("tmp.in")
+    if os.path.exists("tmp.out"):
+        os.remove("tmp.out")
+
 
     # Plot convergence: Chi² vs. iteration
     plot_convergence(result)
