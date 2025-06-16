@@ -3,6 +3,7 @@ import itertools
 import numpy as np
 import time
 from tqdm import tqdm
+import os
 
 
 class CHUCK3InputBuilder:
@@ -1011,13 +1012,40 @@ neutron_seperation_energy = 7.322  # MeV, neutron separation energy for 148Nd
 
 chuck3_executable = "./CHUCK3-docker/run_chuck3.sh"  # Path to the CHUCK3 executable, adjust as needed
 
+def run_chuck3_input(
+        executable_path: str,
+        input_file: str,
+        output_file: str = None,
+    ):
+    """
+    Run CHUCK3 with the given input file.
+    """
+    import subprocess
+
+    if output_file is None:
+        result = subprocess.run(
+            [executable_path, input_file],
+            capture_output=True,
+        )
+    else:
+        result = subprocess.run(
+            [executable_path, input_file, output_file],
+            capture_output=True,
+        )
+
+    if result.returncode != 0:
+        print("STDOUT:\n", result.stdout)
+        print("STDERR:\n", result.stderr)
+        raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
+    
 # (p,t) direct transfer
 def direct_transfer(
         excited_state_spin: float, 
         excited_state_parity: float, 
         excited_state_energy: float, 
         orbitals: list[str], 
-        input_save_path: str = None, 
+        input_path: str,
+        output_path: str,
         run: bool = False
         ):
     
@@ -1117,348 +1145,24 @@ def direct_transfer(
     if len(orbitals) > 1:
         name = f"{excited_state_energy*1000:.0f}keV_{excited_state_spin:.0f}{parity}_direct_transfer"
 
-    if input_save_path is not None:
-        # Ensure the directory exists
-        import os
-        os.makedirs(input_save_path, exist_ok=True)
-
-        # Add the name to the path
-        path = f"{input_save_path}/{name}.in"
-
-        with open(path, 'w') as f:
-            f.write(input_file)
+    # Check to see if the input path file already exists using os.path.exists, if so ask the user if they want to overwrite it
+    if os.path.exists(input_path):
+        overwrite = input(f"Input file {input_path} already exists. Overwrite? (y/n): ").strip().lower()
+        if overwrite != 'y':
+            print("Exiting without overwriting the input file.")
+            return
         
-        if run:
-            print(f"Running CHUCK3 for {name} with input file: {path}")
-            import subprocess
+    with open(input_path, 'w') as f:
+        f.write(input_file)
 
-            # Strip leading folder
-            relative_input_path = path.replace("CHUCK3-docker/", "")
+    if run:
+        print(f"Running CHUCK3 with input file: {input_path} and output file: {output_path}")
 
-            print(f"Running CHUCK3 with input file: {relative_input_path}")
-
-            result = subprocess.run(
-                ["./run_chuck3.sh", relative_input_path],
-                cwd="CHUCK3-docker",
-                capture_output=True,
-                text=True
-            )
-
-            if result.returncode != 0:
-                print("STDOUT:\n", result.stdout)
-                print("STDERR:\n", result.stderr)
-                raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
-
-def two_step_config_1(
-        target_excited_state_spin: float,
-        target_excited_state_parity: float,
-        target_excited_state_energy: float,
-        excited_state_spin: float, 
-        excited_state_parity: float, 
-        excited_state_energy: float,
-        vary_coupling_steps = 1,  # Number of coupling steps, 0 for direct transfer 
-        input_save_path: str = None, 
-        run: bool = False,
-        run_parallel: bool = True,
-        n_jobs: int = 10
-    ):
-        
-        step_values = list(np.linspace(-1560, 1560, vary_coupling_steps))
-        print("Step values for coupling strength: ", step_values)
-
-        # transfer from excited state in target to excited state in residual nucleus
-        target_excited_state_to_residual_excited_state_l_values = possible_l_transfers(
-            target_spin=target_excited_state_spin,
-            target_parity=target_excited_state_parity,
-            excited_spin=excited_state_spin,
-            excited_parity=excited_state_parity
+        run_chuck3_input(
+            executable_path=chuck3_executable,
+            input_file=input_path,
+            output_file=output_path,
         )
-
-        all_combos = list(itertools.product(step_values, repeat=len(target_excited_state_to_residual_excited_state_l_values)+2))
-
-        print(f"Total combinations of coupling strengths: {len(all_combos)}")
-        
-        target_l_values = possible_l_transfers(
-            target_spin=target_spin,
-            target_parity=target_parity,
-            excited_spin=target_excited_state_spin,
-            excited_parity=target_excited_state_parity
-        )
-
-        print(f"Varying {len(target_excited_state_to_residual_excited_state_l_values)+1} couplings across {len(step_values)} steps: {len(all_combos)} total combinations")
-
-        builders = []
-        for combo in all_combos:
-
-            name = "_".join([f"{v:.0f}" for v in combo])
-
-            c = CHUCK3InputBuilder()
-            c.set_header(differential_cross_section_log_scale=0, id=name) 
-
-            # Target GS
-            c.add_channel(
-                id=1,
-                target_spin=target_gs_spin,
-                target_parity=target_gs_parity,
-                energy=energy,
-                projectile_mass=projectile_mass,
-                projectile_charge=projectile_charge,
-                target_mass=target_mass,
-                target_z=target_z,
-                coulomb_charge_diffuseness=0.0,
-                nonlocal_range_parameter=0.85,
-                projectile_spin=projectile_spin,
-                optical_model_parameters=projectile_omp,
-            )
-
-            # Target excited state
-            c.add_channel(
-                id=2,
-                target_spin=target_excited_state_spin,
-                target_parity=target_excited_state_parity,
-                energy=energy,
-                q_value=0.0,
-                excited_state_energy=target_excited_state_energy,
-                projectile_mass=projectile_mass,
-                projectile_charge=projectile_charge,
-                target_mass=target_mass,
-                target_z=target_z,
-                coulomb_charge_diffuseness=0.0,
-                nonlocal_range_parameter=0.85,
-                projectile_spin=projectile_spin,
-                optical_model_parameters=projectile_omp,
-            )
-
-            # Coupling from GS to excited state in target
-            # Collective coupling (qcode=0)
-            for l in target_l_values:
-                c.add_coupling(
-                    channel_id_in=1,
-                    channel_id_out=2,
-                    l=l,
-                    s=0,
-                    coupling_one_way=True,
-                    ldfrm=3,
-                    icouex=True,
-                    beta=beta2_target,
-                    icode=0,
-                )
-
-            # Residual nucleus GS
-            c.add_channel(
-                id=3,
-                target_spin=residual_gs_spin,
-                target_parity=residual_gs_parity,
-                energy=energy,
-                q_value=Q_value,
-                excited_state_energy=0.0,
-                projectile_mass=ejectile_mass,
-                projectile_charge=ejectile_charge,
-                target_mass=residual_mass,
-                target_z=residual_z,
-                coulomb_charge_diffuseness=0.0,
-                nonlocal_range_parameter=0.25,
-                projectile_spin=ejectile_spin,
-                optical_model_parameters=ejectile_omp,
-            )
-
-            # Residual nucleus excited state
-            c.add_channel(
-                id=4,
-                target_spin=excited_state_spin,
-                target_parity=excited_state_parity,
-                energy=energy,
-                q_value=Q_value,
-                excited_state_energy=excited_state_energy,
-                projectile_mass=ejectile_mass,
-                projectile_charge=ejectile_charge,
-                target_mass=residual_mass,
-                target_z=residual_z,
-                coulomb_charge_diffuseness=0.0,
-                nonlocal_range_parameter=0.25,
-                projectile_spin=ejectile_spin,
-                optical_model_parameters=ejectile_omp,
-            )
-
-            # Coupling from residual GS to excited state
-            # Collective coupling (qcode=0)
-            residual_l_values = possible_l_transfers(
-                target_spin=residual_gs_spin,
-                target_parity=residual_gs_parity,
-                excited_spin=excited_state_spin,
-                excited_parity=excited_state_parity
-            )
-
-            for l in residual_l_values:
-                c.add_coupling(
-                    channel_id_in=3,
-                    channel_id_out=4,
-                    l=l,
-                    s=0,
-                    coupling_one_way=True,
-                    ldfrm=3,
-                    icouex=True,
-                    beta=beta2_residual,
-                    icode=0,
-                )
-
-            # transfer from ground state in target to ground state in residual nucleus
-            N, L, J = c.extract_orbital(GS_orbital)
-            c.add_coupling(
-                channel_id_in=1,
-                channel_id_out=3,
-                l=0,
-                s=0,
-                icode=2,
-                ldfrm=0,
-                coupling_one_way=True,
-                icouex=False,
-                beta=combo[0],  # Coupling strength for GS to GS transfer
-                cntrl=1.0,
-                qcode=5.0,
-                flmu=0.0,  # Default for two-nucleon transfer
-                vzero=1.0, # Spectroscopic amplitude for two-nucleon transfer
-                E=neutron_seperation_energy,
-                mp=1.008,
-                zp=0.0,
-                mt=residual_mass,
-                zt=residual_z,
-                E_excited_state=0.0,  # Ground state, no excitation energy
-                omp_lines="neutron",  # Use neutron potential
-                N=N,
-                L=L,
-                J=J,
-                S=1/2,  # Spin of the transferred particle
-                VTRIAL=60.0,  # Trial potential scaling factor
-                DAMP=0.0,  # Damping factor
-            )
-
-                        # Add the coupling for the transfer from ground state in target to excited state in residual nucleus
-            # determine the possible l values for the transfer
-            direct_l_values = possible_l_transfers(
-                target_spin=target_gs_spin,
-                target_parity=target_gs_parity,
-                excited_spin=excited_state_spin,
-                excited_parity=excited_state_parity
-            )
-
-            for l in direct_l_values:
-                c.add_coupling(
-                    channel_id_in=1,
-                    channel_id_out=4,
-                    l=l,
-                    s=0,
-                    icode=2,
-                    ldfrm=0,
-                    coupling_one_way=True,
-                    icouex=False,
-                    beta=combo[1],
-
-                    cntrl=1.0,
-                    qcode=5.0,
-                    vzero=1.0,
-
-                    E=neutron_seperation_energy,
-                    mp=1.008,
-                    zp=0.0,
-                    mt=residual_mass,
-                    zt=residual_z,
-                    E_excited_state=excited_state_energy/2, # Half if two-neutron transfer
-
-                    omp_lines="neutron",
-
-                    N=N,
-                    L=L,
-                    J=J,
-                    S=1/2,
-                    VTRIAL=60.0,
-                    FISW=0,
-                    DAMP=0.0,
-                )
-
-
-            for (i, l_transfer) in enumerate(target_excited_state_to_residual_excited_state_l_values):
-                # Add the coupling for the transfer from excited state in target to excited state in residual nucleus
-                c.add_coupling(
-                    channel_id_in=2,
-                    channel_id_out=4,
-                    l=l_transfer,
-                    s=0,
-                    icode=2,
-                    ldfrm=0,
-                    coupling_one_way=True,
-                    icouex=False,
-                    beta=combo[i+2],  # Coupling strength
-                    cntrl=1.0,  # Read one set of orbital cards
-                    qcode=5.0,  # Two-nucleon transfer
-                    flmu=0.0,  # Default for two-nucleon transfer
-                    vzero=1.0,  # Spectroscopic amplitude for two-nucleon transfer
-                    E=neutron_seperation_energy,  # Neutron separation energy
-                    mp=1.008,  # Mass of the transferred particle (neutron)
-                    zp=0.0,  # Charge of the transferred particle (neutron)
-                    mt=residual_mass,  # Mass of the residual nucleus
-                    zt=residual_z,  # Charge of the residual nucleus
-                    E_excited_state=excited_state_energy/2,  # Half if two-neutron transfer
-                    omp_lines="neutron",  # Use neutron potential
-                    N=N,
-                    L=L,
-                    J=J,
-                    S=1/2,  # Spin of the transferred particle
-                    VTRIAL=60.0,  # Trial potential scaling factor
-                    FISW=0,  # No search on well depth
-                    DAMP=0.0,  # Damping factor
-                )
-
-            c.build()
-            builders.append(c)
-
-        # fragment the input cards into separate files
-        input_file = CHUCK3InputBuilder.combine_input_cards(builders)
-
-        if input_save_path is not None:
-            # Ensure the directory exists
-            import os
-            os.makedirs(input_save_path, exist_ok=True)
-
-            target_parity_str = "plus" if target_excited_state_parity == 1 else "minus"
-            excited_state_parity_str = "plus" if excited_state_parity == 1 else "minus"
-
-            name = f"2step_{target_str}_{target_excited_state_energy*1000:.0f}keV_{target_excited_state_spin:.0f}{target_parity_str}_to_{excited_state_energy*1000:.0f}keV_{excited_state_spin:.0f}{excited_state_parity_str}_varying_couplings"
-
-            # Add the name to the path
-            path = f"{input_save_path}/{name}.in"
-
-            with open(path, 'w') as f:
-                f.write(input_file)
-
-            if run:
-                print(f"Running CHUCK3 for {name} with input file: {path}")
-                import subprocess
-
-                # Strip leading folder
-                relative_input_path = path.replace("CHUCK3-docker/", "")
-
-                print(f"Running CHUCK3 with input file: {relative_input_path}")
-
-                if run_parallel:
-                    result = subprocess.run(
-                        ["./run_chuck3.sh", "--parallel", str(n_jobs), relative_input_path],
-                        cwd="CHUCK3-docker",
-                        # capture_output=True,
-                        # text=True
-                    )
-                else:   
-                    result = subprocess.run(
-                            ["./run_chuck3.sh", relative_input_path],
-                            cwd="CHUCK3-docker",
-                            # capture_output=True,
-                            # text=True
-                        )
-
-                if result.returncode != 0:
-                    print("STDOUT:\n", result.stdout)
-                    print("STDERR:\n", result.stderr)
-                    raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
 
 def two_step_config_1_input(
         target_excited_state_spin: float,
@@ -1495,7 +1199,7 @@ def two_step_config_1_input(
         )
 
     c = CHUCK3InputBuilder()
-    c.set_header(differential_cross_section_log_scale=0, id=name) 
+    c.set_header(differential_cross_section_log_scale=3, id=name) 
 
     # Target GS
     c.add_channel(
@@ -1713,32 +1417,506 @@ def two_step_config_1_input(
 
     return c.build()
 
-def run_chuck3_input(
-        executable_path: str,
-        input_file: str,
-        output_file: str = None,
+def two_step_config_2_input(
+        excited_state_spin: float, 
+        excited_state_parity: float, 
+        excited_state_energy: float,
+        couplings: list[float]
     ):
-    """
-    Run CHUCK3 with the given input file.
-    """
-    import subprocess
 
-    if output_file is None:
-        result = subprocess.run(
-            [executable_path, input_file],
-            capture_output=True,
-        )
-    else:
-        result = subprocess.run(
-            [executable_path, input_file, output_file],
-            capture_output=True,
+    '''
+    Create a CHUCK3 input for a two-step configuration with specified couplings.
+
+    Possible couplings:
+    Target GS to Residual first 2+
+    Residual First 2+ to Residual Excited State
+    Target GS to First 2+ in Target
+    First 2+ in Target to Residual Excited State (All possible l transfers)
+    '''
+
+    name = "_".join([f"{v:.0f}" for v in couplings])
+
+
+    c = CHUCK3InputBuilder()
+    c.set_header(differential_cross_section_log_scale=3, id=name) 
+
+    # Target GS
+    c.add_channel(
+        id=1,
+        target_spin=target_gs_spin,
+        target_parity=target_gs_parity,
+        energy=energy,
+        projectile_mass=projectile_mass,
+        projectile_charge=projectile_charge,
+        target_mass=target_mass,
+        target_z=target_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.85,
+        projectile_spin=projectile_spin,
+        optical_model_parameters=projectile_omp,
+    )
+
+    # Target excited state
+    c.add_channel(
+        id=2,
+        target_spin=2,
+        target_parity=1,
+        energy=energy,
+        q_value=0.0,
+        excited_state_energy=0.130,
+        projectile_mass=projectile_mass,
+        projectile_charge=projectile_charge,
+        target_mass=target_mass,
+        target_z=target_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.85,
+        projectile_spin=projectile_spin,
+        optical_model_parameters=projectile_omp,
+    )
+
+    # First 2+ state in residual nucleus
+    c.add_channel(
+        id=3,
+        target_spin=2,
+        target_parity=1,
+        energy=energy,
+        q_value=Q_value,
+        excited_state_energy=0.301,
+        projectile_mass=ejectile_mass,
+        projectile_charge=ejectile_charge,
+        target_mass=residual_mass,
+        target_z=residual_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.25,
+        projectile_spin=ejectile_spin,
+        optical_model_parameters=ejectile_omp,
+    )
+
+    # Residual nucleus excited state
+    c.add_channel(
+        id=4,
+        target_spin=excited_state_spin,
+        target_parity=excited_state_parity,
+        energy=energy,
+        q_value=Q_value,
+        excited_state_energy=excited_state_energy,
+        projectile_mass=ejectile_mass,
+        projectile_charge=ejectile_charge,
+        target_mass=residual_mass,
+        target_z=residual_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.25,
+        projectile_spin=ejectile_spin,
+        optical_model_parameters=ejectile_omp,
+    )
+
+
+    # Coupling from target GS to first 2+ state in target
+    # Collective coupling (qcode=0)
+    c.add_coupling(
+        channel_id_in=1,
+        channel_id_out=2,
+        l=2,
+        s=0,
+        coupling_one_way=True,
+        ldfrm=3,
+        icouex=True,
+        beta=beta2_target,
+        icode=0,
+    )
+
+    # Coupling from residual 2+ to excited state
+    collective_residual_l_values = possible_l_transfers(
+        target_spin=2,
+        target_parity=1,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity
+    )
+    for l in collective_residual_l_values:
+        c.add_coupling(
+            channel_id_in=3,
+            channel_id_out=4,
+            l=l,
+            s=0,
+            coupling_one_way=True,
+            ldfrm=3,
+            icouex=True,
+            beta=beta2_residual,
+            icode=0,
         )
 
-    if result.returncode != 0:
-        print("STDOUT:\n", result.stdout)
-        print("STDERR:\n", result.stderr)
-        raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
+    # Direct: Coupling from target GS to residual excited state (2 neutron transfer)
+    # First coupling value
+    N, L, J = c.extract_orbital(GS_orbital)
+
+    direct_l_values = possible_l_transfers(
+        target_spin=target_gs_spin,
+        target_parity=target_gs_parity,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity
+    )
+    for l in direct_l_values:
+        c.add_coupling(
+            channel_id_in=1,
+            channel_id_out=4,
+            l=l,
+            s=0,
+            icode=2,
+            ldfrm=0,
+            coupling_one_way=True,
+            icouex=False,
+            beta=couplings[0],
+
+            cntrl=1.0,
+            qcode=5.0,
+            vzero=1.0,
+
+            E=neutron_seperation_energy,
+            mp=1.008,
+            zp=0.0,
+            mt=residual_mass,
+            zt=residual_z,
+            E_excited_state=excited_state_energy/2, # Half if two-neutron transfer
+
+            omp_lines="neutron",
+
+            N=N,
+            L=L,
+            J=J,
+            S=1/2,
+            VTRIAL=60.0,
+            FISW=0,
+            DAMP=0.0,
+        )
+
+    # Coupling from target GS to first 2+ state in residual nucleus (2 neutron transfer)
+    # Second coupling value
+    c.add_coupling(
+        channel_id_in=1,
+        channel_id_out=3,
+        l=2,
+        s=0,
+        icode=2,
+        ldfrm=0,
+        coupling_one_way=True,
+        icouex=False,
+        beta=couplings[1],
+        cntrl=1.0,
+        qcode=5.0,
+        flmu=0.0,
+        vzero=1.0,
+        E=neutron_seperation_energy,
+        mp=1.008,
+        zp=0.0,
+        mt=residual_mass,
+        zt=residual_z,
+        E_excited_state=0.301/2, # Half if two-neutron transfer
+        omp_lines="neutron",
+        N=N,
+        L=L,
+        J=J,
+        S=1/2,
+        VTRIAL=60.0,
+        FISW=0,
+        DAMP=0.0,
+    )
+
+    # Coupling from target 2+ to residual excited state (2 neutron transfer)
+    target_excited_state_to_residual_excited_state_l_values = possible_l_transfers(
+        target_spin=2,
+        target_parity=1,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity
+    )
+    for (i, l_transfer) in enumerate(target_excited_state_to_residual_excited_state_l_values):
+        c.add_coupling(
+            channel_id_in=2,
+            channel_id_out=4,
+            l=l_transfer,
+            s=0,
+            icode=2,
+            ldfrm=0,
+            coupling_one_way=True,
+            icouex=False,
+            beta=couplings[i+2],
+            cntrl=1.0,
+            qcode=5.0,
+            flmu=0.0,
+            vzero=1.0,
+            E=neutron_seperation_energy,
+            mp=1.008,
+            zp=0.0,
+            mt=residual_mass,
+            zt=residual_z,
+            E_excited_state=excited_state_energy/2,
+            omp_lines="neutron",
+            N=N,
+            L=L,
+            J=J,
+            S=1/2,
+            VTRIAL=60.0,
+            FISW=0,
+            DAMP=0.0,
+        )
+
+    return c.build()
+
+def two_step_config_3_input(
+        target_excited_state_spin: float,
+        target_excited_state_parity: float,
+        target_excited_state_energy: float,
+        excited_state_spin_step: float,
+        excited_state_parity_step: float,
+        excited_state_energy_step: float,
+        excited_state_spin: float, 
+        excited_state_parity: float, 
+        excited_state_energy: float,
+        couplings: list[float]
+    ):
+
+    '''
+    Create a CHUCK3 input for a two-step configuration with specified couplings.
+
+    c0 = Coupling strength for the transfer from ground state in target to ground state in residual nucleus
+    c1 = Coupling strength for the transfer from ground state in target to excited state step in residual nucleus
+    c2 = Coupling strength for the transfer from ground state in target to excited state in residual nucleus
+    c2, c3, ... = Coupling strengths for the transfer from excited state in target to excited state in residual nucleus
+    '''
+
+    name = "_".join([f"{v:.0f}" for v in couplings])
+
+    target_excited_state_to_residual_excited_state_l_values = possible_l_transfers(
+            target_spin=target_excited_state_spin,
+            target_parity=target_excited_state_parity,
+            excited_spin=excited_state_spin,
+            excited_parity=excited_state_parity
+        )
     
+    target_l_values = possible_l_transfers(
+            target_spin=target_spin,
+            target_parity=target_parity,
+            excited_spin=target_excited_state_spin,
+            excited_parity=target_excited_state_parity
+        )
+
+    c = CHUCK3InputBuilder()
+    c.set_header(differential_cross_section_log_scale=3, id=name) 
+
+    # Target GS
+    c.add_channel(
+        id=1,
+        target_spin=target_gs_spin,
+        target_parity=target_gs_parity,
+        energy=energy,
+        projectile_mass=projectile_mass,
+        projectile_charge=projectile_charge,
+        target_mass=target_mass,
+        target_z=target_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.85,
+        projectile_spin=projectile_spin,
+        optical_model_parameters=projectile_omp,
+    )
+
+    # Target excited state
+    c.add_channel(
+        id=2,
+        target_spin=target_excited_state_spin,
+        target_parity=target_excited_state_parity,
+        energy=energy,
+        q_value=0.0,
+        excited_state_energy=target_excited_state_energy,
+        projectile_mass=projectile_mass,
+        projectile_charge=projectile_charge,
+        target_mass=target_mass,
+        target_z=target_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.85,
+        projectile_spin=projectile_spin,
+        optical_model_parameters=projectile_omp,
+    )
+
+    # Coupling from GS to excited state in target
+    # Collective coupling (qcode=0)
+    for l in target_l_values:
+        c.add_coupling(
+            channel_id_in=1,
+            channel_id_out=2,
+            l=l,
+            s=0,
+            coupling_one_way=True,
+            ldfrm=3,
+            icouex=True,
+            beta=beta2_target,
+            icode=0,
+        )
+
+    # Residual nucleus GS
+    c.add_channel(
+        id=3,
+        target_spin=residual_gs_spin,
+        target_parity=residual_gs_parity,
+        energy=energy,
+        q_value=Q_value,
+        excited_state_energy=0.0,
+        projectile_mass=ejectile_mass,
+        projectile_charge=ejectile_charge,
+        target_mass=residual_mass,
+        target_z=residual_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.25,
+        projectile_spin=ejectile_spin,
+        optical_model_parameters=ejectile_omp,
+    )
+
+    # Residual nucleus excited state
+    c.add_channel(
+        id=4,
+        target_spin=excited_state_spin,
+        target_parity=excited_state_parity,
+        energy=energy,
+        q_value=Q_value,
+        excited_state_energy=excited_state_energy,
+        projectile_mass=ejectile_mass,
+        projectile_charge=ejectile_charge,
+        target_mass=residual_mass,
+        target_z=residual_z,
+        coulomb_charge_diffuseness=0.0,
+        nonlocal_range_parameter=0.25,
+        projectile_spin=ejectile_spin,
+        optical_model_parameters=ejectile_omp,
+    )
+
+    # Coupling from residual GS to excited state
+    # Collective coupling (qcode=0)
+    residual_l_values = possible_l_transfers(
+        target_spin=residual_gs_spin,
+        target_parity=residual_gs_parity,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity
+    )
+
+    for l in residual_l_values:
+        c.add_coupling(
+            channel_id_in=3,
+            channel_id_out=4,
+            l=l,
+            s=0,
+            coupling_one_way=True,
+            ldfrm=3,
+            icouex=True,
+            beta=beta2_residual,
+            icode=0,
+        )
+
+    # transfer from ground state in target to ground state in residual nucleus
+    N, L, J = c.extract_orbital(GS_orbital)
+    c.add_coupling(
+        channel_id_in=1,
+        channel_id_out=3,
+        l=0,
+        s=0,
+        icode=2,
+        ldfrm=0,
+        coupling_one_way=True,
+        icouex=False,
+        beta=couplings[0],  # Coupling strength for GS to GS transfer
+        cntrl=1.0,
+        qcode=5.0,
+        flmu=0.0,  # Default for two-nucleon transfer
+        vzero=1.0, # Spectroscopic amplitude for two-nucleon transfer
+        E=neutron_seperation_energy,
+        mp=1.008,
+        zp=0.0,
+        mt=residual_mass,
+        zt=residual_z,
+        E_excited_state=0.0,  # Ground state, no excitation energy
+        omp_lines="neutron",  # Use neutron potential
+        N=N,
+        L=L,
+        J=J,
+        S=1/2,  # Spin of the transferred particle
+        VTRIAL=60.0,  # Trial potential scaling factor
+        DAMP=0.0,  # Damping factor
+    )
+
+                # Add the coupling for the transfer from ground state in target to excited state in residual nucleus
+    # determine the possible l values for the transfer
+    direct_l_values = possible_l_transfers(
+        target_spin=target_gs_spin,
+        target_parity=target_gs_parity,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity
+    )
+
+    for l in direct_l_values:
+        c.add_coupling(
+            channel_id_in=1,
+            channel_id_out=4,
+            l=l,
+            s=0,
+            icode=2,
+            ldfrm=0,
+            coupling_one_way=True,
+            icouex=False,
+            beta=couplings[1],
+
+            cntrl=1.0,
+            qcode=5.0,
+            vzero=1.0,
+
+            E=neutron_seperation_energy,
+            mp=1.008,
+            zp=0.0,
+            mt=residual_mass,
+            zt=residual_z,
+            E_excited_state=excited_state_energy/2, # Half if two-neutron transfer
+
+            omp_lines="neutron",
+
+            N=N,
+            L=L,
+            J=J,
+            S=1/2,
+            VTRIAL=60.0,
+            FISW=0,
+            DAMP=0.0,
+        )
+
+
+    for (i, l_transfer) in enumerate(target_excited_state_to_residual_excited_state_l_values):
+        # Add the coupling for the transfer from excited state in target to excited state in residual nucleus
+        c.add_coupling(
+            channel_id_in=2,
+            channel_id_out=4,
+            l=l_transfer,
+            s=0,
+            icode=2,
+            ldfrm=0,
+            coupling_one_way=True,
+            icouex=False,
+            beta=couplings[i+2],  # Coupling strength
+            cntrl=1.0,  # Read one set of orbital cards
+            qcode=5.0,  # Two-nucleon transfer
+            flmu=0.0,  # Default for two-nucleon transfer
+            vzero=1.0,  # Spectroscopic amplitude for two-nucleon transfer
+            E=neutron_seperation_energy,  # Neutron separation energy
+            mp=1.008,  # Mass of the transferred particle (neutron)
+            zp=0.0,  # Charge of the transferred particle (neutron)
+            mt=residual_mass,  # Mass of the residual nucleus
+            zt=residual_z,  # Charge of the residual nucleus
+            E_excited_state=excited_state_energy/2,  # Half if two-neutron transfer
+            omp_lines="neutron",  # Use neutron potential
+            N=N,
+            L=L,
+            J=J,
+            S=1/2,  # Spin of the transferred particle
+            VTRIAL=60.0,  # Trial potential scaling factor
+            FISW=0,  # No search on well depth
+            DAMP=0.0,  # Damping factor
+        )
+
+    return c.build()
 from skopt import gp_minimize
 from skopt.space import Real
 from skopt.utils import use_named_args
@@ -1747,8 +1925,7 @@ import matplotlib.pyplot as plt
 from skopt.plots import plot_convergence, plot_objective, plot_evaluations
 
 
-def bayesian_optimization_input(
-    output_dir: str,
+def two_step_config_1_bayesian_optimization(
     target_excited_state_spin,
     target_excited_state_parity,
     target_excited_state_energy,
@@ -1758,20 +1935,12 @@ def bayesian_optimization_input(
     exp_angles,
     exp_cross_section,
     exp_cross_section_errors,
-    n_calls=50,
+    input_file_path: str, 
+    output_file_path: str,
+    n_calls=100,
     n_jobs=6,
-    coupling_num=4  # Number of coupling strengths to vary
+    coupling_num=4,
 ):
-    
-    # make output directory if it does not exist
-    import os
-    os.makedirs(output_dir, exist_ok=True)
-    
-    target_parity_str = "plus" if target_excited_state_parity == 1 else "minus"
-    excited_state_parity_str = "plus" if excited_state_parity == 1 else "minus"
-
-    name = f"2step_{target_str}_{target_excited_state_energy*1000:.0f}keV_{target_excited_state_spin:.0f}{target_parity_str}_to_{excited_state_energy*1000:.0f}keV_{excited_state_spin:.0f}{excited_state_parity_str}_varying_couplings"
-
     print("Starting Bayesian optimization for CHUCK3 input generation...")
 
     progress_bar = tqdm(total=n_calls, desc="Optimizing", dynamic_ncols=True)
@@ -1787,19 +1956,37 @@ def bayesian_optimization_input(
         })
         progress_bar.update(1)
 
-    space  = [
-        Real(-1560.0, 1560.0, name='c0'),
-        Real(-1560.0, 1560.0, name='c1'),
-        Real(-1560.0, 1560.0, name='c2'),
-        Real(-1560.0, 1560.0, name='c3'),
-        Real(-1560.0, 1560.0, name='c4'),
-    ]
+    # Automatically determine number of couplings
+    target_to_exc_l = possible_l_transfers(
+        target_spin=target_spin,
+        target_parity=target_parity,
+        excited_spin=target_excited_state_spin,
+        excited_parity=target_excited_state_parity,
+    )
+
+    target_exc_to_final_l = possible_l_transfers(
+        target_spin=target_excited_state_spin,
+        target_parity=target_excited_state_parity,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity,
+    )
+
+    final_l = possible_l_transfers(
+        target_spin=target_gs_spin,
+        target_parity=target_gs_parity,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity,
+    )
+
+    n_couplings = 2 + len(target_exc_to_final_l)  # c0, c1, then one for each l-transfer in two-step
+
+    space = [Real(-1560.0, 1560.0, name=f"c{i}") for i in range(n_couplings)]
 
     @use_named_args(space)
     def objective(**params):
         nonlocal best_info
 
-        couplings = [params['c0'], params['c1'], params['c2'], params['c3'], params['c4']]
+        couplings = [params[f'c{i}'] for i in range(n_couplings)]
         input_str = two_step_config_1_input(
             target_excited_state_spin,
             target_excited_state_parity,
@@ -1871,21 +2058,13 @@ def bayesian_optimization_input(
         excited_state_spin,
         excited_state_parity,
         excited_state_energy,
-        [best_info['params']['c0'], best_info['params']['c1'], best_info['params']['c2'], best_info['params']['c3'], best_info['params']['c4']]
+        [best_info['params'][f'c{i}'] for i in range(n_couplings)]
     )
 
-
-    # with open(f"{output_dir}/{name}_bayesian_best.in", "w") as f:
-    #     f.write(best_input_str)
-
-    # run_chuck3_input(f"{output_dir}/{name}_bayesian_best.in", run_parallel=False)
-
-    final_path = f"{output_dir}/{name}_bayesian_best.in"
-    final_path_out = f"{output_dir}/{name}_bayesian_best.out"
-    with open(final_path, "w") as f:
+    with open(input_file_path, "w") as f:
         f.write(best_input_str)
         
-    run_chuck3_input(chuck3_executable, final_path, output_file=final_path_out)
+    run_chuck3_input(chuck3_executable, input_file_path, output_file_path)
 
     # clean up temp files
     import os
@@ -1897,14 +2076,161 @@ def bayesian_optimization_input(
 
     # Plot convergence: Chi² vs. iteration
     plot_convergence(result)
-    plt.savefig(f"{output_dir}/{name}_bayesian_convergence.png", dpi=300)
+    # strip the stuff after the .
+    name_base = os.path.splitext(output_file_path)[0]
+    print(name_base)
+    plt.savefig(f"{name_base}_bayesian_convergence.png", dpi=300)
 
     # Plot partial dependence of chi² on each parameter
     plot_objective(result)
-    plt.savefig(f"{output_dir}/{name}_bayesian_objective.png", dpi=300)
+    plt.savefig(f"{name_base}_bayesian_objective.png", dpi=300)
 
     # Plot pairwise parameter evaluations
     plot_evaluations(result)
-    plt.savefig(f"{output_dir}/{name}_bayesian_evaluations.png", dpi=300)
+    plt.savefig(f"{name_base}_bayesian_evaluations.png", dpi=300)
+
+    return result
+
+def two_step_config_2_bayesian_optimization(
+    excited_state_spin,
+    excited_state_parity,
+    excited_state_energy,
+    exp_angles,
+    exp_cross_section,
+    exp_cross_section_errors,
+    input_file_path: str, 
+    output_file_path: str,
+    n_calls=100,
+    n_jobs=6,
+    coupling_num=4,
+):
+    print("Starting Bayesian optimization for CHUCK3 input generation...")
+
+    progress_bar = tqdm(total=n_calls, desc="Optimizing", dynamic_ncols=True)
+    best_info = {"chi2": np.inf, "rchi2": np.inf, "eta": None, "params": None}
+
+    def progress_callback(res):
+        best_so_far = best_info["rchi2"]
+        current_chi2 = res.func_vals[-1]
+        rchi2 = current_chi2
+        progress_bar.set_postfix({
+            "Current Δrχ²": f"{rchi2:.4f}",
+            "Best Δrχ²": f"{abs(best_so_far - 1.0):.4f}",
+        })
+        progress_bar.update(1)
+
+
+    target_exc_to_final_l = possible_l_transfers(
+        target_spin=2,
+        target_parity=1,
+        excited_spin=excited_state_spin,
+        excited_parity=excited_state_parity,
+    )
+
+
+    n_couplings = 2 + len(target_exc_to_final_l)  # c0, c1, then one for each l-transfer in two-step
+
+    space = [Real(-1560.0, 1560.0, name=f"c{i}") for i in range(n_couplings)]
+
+    @use_named_args(space)
+    def objective(**params):
+        nonlocal best_info
+
+        couplings = [params[f'c{i}'] for i in range(n_couplings)]
+        input_str = two_step_config_2_input(
+            excited_state_spin,
+            excited_state_parity,
+            excited_state_energy,
+            couplings
+        )
+        with open("tmp.in", "w") as f:
+            f.write(input_str)
+
+        run_chuck3_input(chuck3_executable, "tmp.in", output_file="tmp.out")
+
+        thetas_th, sigmas_th = parse_chuck3_output_for_optimization("tmp.out", coupling_num=coupling_num)
+
+        if len(thetas_th) == 0 or len(sigmas_th) == 0:
+            print("Warning: No CHUCK3 output found.")
+            return np.inf
+        
+        # Interpolate theoretical sigmas to experimental angles
+        interp = np.interp(exp_angles, thetas_th, sigmas_th, left=0, right=0)
+
+        # Minimize chi2 by finding best scaling factor
+        def chi2_scale(s):
+            return np.sum(((s * interp - exp_cross_section) / exp_cross_section_errors) ** 2)
+
+        result = minimize_scalar(chi2_scale, bounds=(1e-3, 1e10), method='bounded')
+        if not result.success:
+            print("Scaling failed.")
+            return np.inf
+
+        eta = result.x
+        chi2 = chi2_scale(eta)
+        dof = len(exp_angles) - 1
+        rchi2 = chi2 / dof
+        target_value = abs(rchi2 - 1.0)
+
+        # Update best info
+        if target_value < abs(best_info["rchi2"] - 1.0):
+            best_info["chi2"] = chi2
+            best_info["rchi2"] = rchi2
+            best_info["eta"] = eta
+            best_info["params"] = params.copy()
+
+        return target_value
+    
+    result = gp_minimize(objective, 
+                         space, 
+                         n_calls=n_calls, 
+                         random_state=0, 
+                         verbose=False, 
+                         n_jobs=n_jobs,
+                         callback=[progress_callback],)
+
+    print("\nOptimization Complete!")
+    print(f"Best Chi²: {best_info['chi2']:.3f}")
+    print(f"Best reduced Chi²: {best_info['rchi2']:.3f}")
+    print(f"Best scaling factor (η): {best_info['eta']:.3f}")
+    print("Best coupling strengths:")
+    for key, val in best_info['params'].items():
+        print(f"  {key}: {val:.2f}")
+
+    # Save the best input file
+    best_input_str = two_step_config_2_input(
+        excited_state_spin,
+        excited_state_parity,
+        excited_state_energy,
+        [best_info['params'][f'c{i}'] for i in range(n_couplings)]
+    )
+
+    with open(input_file_path, "w") as f:
+        f.write(best_input_str)
+        
+    run_chuck3_input(chuck3_executable, input_file_path, output_file_path)
+
+    # clean up temp files
+    import os
+    if os.path.exists("tmp.in"):
+        os.remove("tmp.in")
+    if os.path.exists("tmp.out"):
+        os.remove("tmp.out")
+
+
+    # Plot convergence: Chi² vs. iteration
+    plot_convergence(result)
+    # strip the stuff after the .
+    name_base = os.path.splitext(output_file_path)[0]
+    print(name_base)
+    plt.savefig(f"{name_base}_bayesian_convergence.png", dpi=300)
+
+    # Plot partial dependence of chi² on each parameter
+    plot_objective(result)
+    plt.savefig(f"{name_base}_bayesian_objective.png", dpi=300)
+
+    # Plot pairwise parameter evaluations
+    plot_evaluations(result)
+    plt.savefig(f"{name_base}_bayesian_evaluations.png", dpi=300)
 
     return result
